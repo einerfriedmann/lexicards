@@ -1,0 +1,17 @@
+*.iml
+.gradle/
+.idea/
+local.properties
+.DS_Store
+build/
+app/build/
+
+signing/
+node_modules/
+test-results/
+.kotlin/
+design-reference/
+*.jks
+*.keystore
+.env
+.env.*
