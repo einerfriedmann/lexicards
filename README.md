@@ -4,9 +4,10 @@ An offline English flashcard app with Android text-to-speech, spaced review, nes
 
 The Android shell is Kotlin. The bundled HTML/CSS/JavaScript interface and SQL.js run locally in WebView; no CDN or account is required to open your cards. Android 8.0+ and a current Android System WebView are required.
 
-## Version 0.6.0
+## Version 0.6.1
 
-- Five persistent bottom tabs and a clear daily review action.
+- A single home screen for navigation, explicit back-to-home actions, and a clear daily review action.
+- No duplicated bottom menu; cards, decks, statistics and data are reachable from home.
 - Focused study screens, compact UK/US audio controls and visible review intervals.
 - Search, status filters, readable card rows and contextual actions.
 - Collapsible nested decks with clear parent/child structure.

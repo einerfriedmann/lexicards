@@ -118,7 +118,7 @@ const server = {close() {}};
    assert.deepEqual(calls[0],['speak','abandon','en-GB']); assert.deepEqual(calls[1],['speak','abandon','en-US']);
    assert.deepEqual(calls[2],['speak','Do not abandon your plans.','en-GB']);
    assert.match(calls[3][1],/^https:\/\/youglish\.com\/pronounce\/abandon\/english\/uk$/);
-   await page.screenshot({path:path.join(output,'deck-phone.png'),fullPage:true});
+   await page.screenshot({path:path.join(output,'deck-phone.png'),fullPage:true,animations:'disabled'});
    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),true);
   });
   let backup;
@@ -229,7 +229,7 @@ const server = {close() {}};
    const value='<img src=x onerror="window.shareInjected=1">\nHe said "hello" & smiled.';
    await sendShared('literal-example',value);
    assert.equal(await page.locator('#sharedTextPreview img').count(),0);
-   await page.screenshot({path:path.join(output,'share-choice-phone.png'),fullPage:true});
+   await page.screenshot({path:path.join(output,'share-choice-phone.png'),fullPage:true,animations:'disabled'});
    await page.locator('#shareToExample').click();
    assert.equal(await page.locator('#fExample').inputValue(),value);
    assert.equal(await page.evaluate(()=>window.shareInjected),undefined);
@@ -383,8 +383,8 @@ const server = {close() {}};
    }
    await page.locator('#statsChart button').last().click();assert.match(await page.locator('#statsChartDetail').textContent(),/повторений/);
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
-   await page.screenshot({path:path.join(output,'statistics-phone.png'),fullPage:true});
-   await page.evaluate(()=>show('decks'));await page.screenshot({path:path.join(output,'subdecks-phone.png'),fullPage:true});
+   await page.screenshot({path:path.join(output,'statistics-phone.png'),fullPage:true,animations:'disabled'});
+   await page.evaluate(()=>show('decks'));await page.screenshot({path:path.join(output,'subdecks-phone.png'),fullPage:true,animations:'disabled'});
   });
   let hierarchyBackup,hierarchyCsv,hierarchyState;
   await check('SQLite backup contains subdecks and complete review history',async()=>{
@@ -408,13 +408,16 @@ const server = {close() {}};
   });
 
 
-  await check('five bottom tabs stay visible and usable at 320 and 390 pixels',async()=>{
+  await check('all sections open from home and return home on 320 and 390 pixel phones',async()=>{
    for(const width of [320,390]){
     await page.setViewportSize({width,height:844});await page.evaluate(()=>show('home'));
-    for(const id of ['home','library','decks','stats','settings']){
-     const tab=page.locator('#bottomNav button[data-page="'+id+'"]');await tab.click();
-     assert.equal(await page.evaluate(()=>activePage),id);assert.equal(await tab.getAttribute('aria-current'),'page');
-     const box=await tab.boundingBox();assert.ok(box.x>=0 && box.x+box.width<=width+1 && box.y+box.height<=844);
+    assert.equal(await page.locator('#bottomNav').count(),0);
+    assert.equal(await page.locator('#backHome').isVisible(),false);
+    for(const [id,link] of [['library','homeCardsLink'],['decks','homeDecksLink'],['stats','homeStatsLink'],['settings','homeDataLink']]){
+     assert.equal(await page.locator('#'+link).count(),1);
+     await page.locator('#'+link).click();assert.equal(await page.evaluate(()=>activePage),id);
+     const back=page.getByRole('button',{name:'На главную',exact:true});await back.click();
+     assert.equal(await page.evaluate(()=>activePage),'home');
     }
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
    }
@@ -487,13 +490,13 @@ const server = {close() {}};
    for(let d=0;d<7;d++)for(let i=0;i<[8,12,5,17,11,15,9][d];i++)demo.reviews.push({id:'demo-review-'+d+'-'+i,cardId:'demo-'+i%24,deck:demo.cards[i%24].deck,at:localDayOffset(Date.now(),d-6).getTime()+10*3600000,known:i%4!==0,interval:3});
    await commitState(demo);renderAll();resetForm();setLibraryStatus('all');show('home');
   });
-  await page.screenshot({path:path.join(output,'ui-home-0.6.0.png'),fullPage:true});
-  await page.evaluate(()=>show('library'));await page.screenshot({path:path.join(output,'ui-library-0.6.0.png'),fullPage:true});
-  await page.evaluate(()=>show('decks'));await page.screenshot({path:path.join(output,'ui-decks-0.6.0.png'),fullPage:true});
-  await page.evaluate(()=>{show('home');startReview();reveal();});await page.screenshot({path:path.join(output,'ui-review-0.6.0.png'),fullPage:true});
-  await page.evaluate(()=>{show('stats');document.getElementById('statsDeck').value='';document.getElementById('statsPeriod').value='7';renderStatistics();});await page.screenshot({path:path.join(output,'ui-stats-0.6.0.png'),fullPage:true});
+  await page.screenshot({path:path.join(output,'ui-home-0.6.1.png'),fullPage:true,animations:'disabled'});
+  await page.evaluate(()=>show('library'));await page.screenshot({path:path.join(output,'ui-library-0.6.1.png'),fullPage:true,animations:'disabled'});
+  await page.evaluate(()=>show('decks'));await page.screenshot({path:path.join(output,'ui-decks-0.6.1.png'),fullPage:true,animations:'disabled'});
+  await page.evaluate(()=>{show('home');startReview();reveal();});await page.screenshot({path:path.join(output,'ui-review-0.6.1.png'),fullPage:true,animations:'disabled'});
+  await page.evaluate(()=>{show('stats');document.getElementById('statsDeck').value='';document.getElementById('statsPeriod').value='7';renderStatistics();});await page.screenshot({path:path.join(output,'ui-stats-0.6.1.png'),fullPage:true,animations:'disabled'});
 
-  await page.screenshot({path:path.join(output,'home-phone.png'),fullPage:true});
+  await page.screenshot({path:path.join(output,'home-phone.png'),fullPage:true,animations:'disabled'});
   assert.deepEqual(pageErrors,[]);assert.deepEqual(external,[]);
   fs.writeFileSync(path.join(output,'regression.json'),JSON.stringify({passed,uncaughtErrors:pageErrors,externalRequests:external,alerts},null,2));
   console.log('All '+passed.length+' regression checks passed.');

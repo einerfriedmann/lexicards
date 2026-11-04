@@ -4,4 +4,4 @@
 Подписанный release при наличии приватного signing/keystore.properties:
 ./gradlew :app:assembleRelease :app:lintRelease
 
-Для установки используй уже собранный LexiCards-0.6.0.apk из ответа.
+Для установки используй уже собранный LexiCards-0.6.1.apk из ответа.

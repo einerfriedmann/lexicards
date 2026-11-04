@@ -144,7 +144,7 @@ async function bootstrap() {
    const existing = new SQL.Database(new Uint8Array(bytes));
    try { db = readDatabase(existing); sqlDb = existing; } catch (e) { existing.close(); throw e; }
   } else { await commitState(db); }
-  ready = true; ensureNav(); initializeUI(); renderAll(); initializeCapture(); show('home'); receiveSharedTextFromNative();
+  ready = true; initializeUI(); renderAll(); initializeCapture(); show('home'); receiveSharedTextFromNative();
   $('sqliteStatus').textContent = 'SQLite готова. Автоматическое сохранение на устройстве.';
  } catch (e) {
   console.error(e);
@@ -163,7 +163,6 @@ function show(id) {
  if (id !== activePage) stopSpeech();
  document.querySelectorAll('main>section').forEach(s => s.classList.toggle('hidden', s.id !== id));
  activePage = id;
- document.querySelectorAll('nav button').forEach(b => { const selected=b.dataset.page===id;b.classList.toggle('active',selected);if(selected)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current'); });
  if (id === 'add') fillDeckSelect();
  if (id === 'stats') renderStatistics();
  updateUIPage(id,previous);
@@ -175,12 +174,7 @@ function handleAndroidBack() {
  if (activePage === 'home') return false;
  show('home'); return true;
 }
-function ensureNav() {
- const n=$('bottomNav');if(n.children.length)return;
- for(const [id,label,name] of [['home','Главная','home'],['library','Карточки','cards'],['decks','Колоды','folder'],['stats','Прогресс','chart'],['settings','Данные','settings']]){
-  const b=document.createElement('button');b.dataset.page=id;b.innerHTML=icon(name);const span=document.createElement('span');span.textContent=label;b.appendChild(span);b.onclick=()=>show(id);n.appendChild(b);
- }
-}
+
 function makeButton(label, action, kind = 'secondary fit') {
  const b = document.createElement('button'); b.className = kind; b.textContent = label; b.onclick = action; return b;
 }
