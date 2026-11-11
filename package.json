@@ -1,0 +1,11 @@
+{
+  "name": "lexicards-android",
+  "private": true,
+  "version": "0.7.0",
+  "scripts": {
+    "test": "node tests/review.cjs && node tests/regression.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.57.0"
+  }
+}
