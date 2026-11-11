@@ -33,7 +33,7 @@ function normalizeReviewHistory(reviews) {
   const id = text(r.id,200), cardId = text(r.cardId,200), deck = text(r.deck,200), at = Number(r.at);
   if (!id || ids.has(id) || !cardId || !Number.isFinite(at) || at < 0 || at > 8640000000000000 || ![true,false,0,1].includes(r.known)) throw new Error('Повреждена запись истории повторений.');
   ids.add(id);
-  return {id,cardId,deck,at:Math.floor(at),known:!!r.known,interval:number(r.interval,0,0,36500)};
+  return {id,cardId,deck,at:Math.floor(at),known:!!r.known,interval:number(r.interval,0,0,36500),introduced:r.introduced===true||r.introduced===1};
  });
 }
 function deckName(key,state = db) { return state.deckMeta?.[key]?.name || key; }
@@ -86,6 +86,7 @@ function fillHierarchyFilter(id) {
 }
 function renderDeckTree(target,editable) {
  const tree=deckTree();
+ if(!tree.length){const empty=document.createElement('div');empty.className='empty';empty.innerHTML='<p>Создай колоду для своих слов.</p>';empty.appendChild(makeButton('Создать колоду',()=>newDeck(),'secondary'));$(target).replaceChildren(empty);return;}
  if(!editable){$(target).replaceChildren(...tree.filter(d=>d.depth===0).slice(0,4).map(d=>buildHomeDeck(d.key)));return;}
  const elements=tree.filter(d=>!deckAncestors(d.key).slice(0,-1).some(k=>collapsedDecks.has(k))).map(({key,depth})=>{
   const row=buildDeckNode(key);row.style.marginLeft=Math.min(depth,3)*10+'px';if(depth)row.classList.add('subdeck-row');return row;
@@ -93,20 +94,23 @@ function renderDeckTree(target,editable) {
  $(target).replaceChildren(...elements);
 }
 function newDeck(parent = null) { openDeckEditor(null,parent); }
-function renameDeck(key) { openDeckEditor(key); }
-function openDeckEditor(key = null,parent = null) {
- const dialog = $('deckEditor'); dialog.dataset.key = key || '';
- $('deckEditorTitle').textContent = key ? 'Настройки колоды' : parent ? 'Новая подколода' : 'Новая колода';
+function renameDeck(key) { openDeckEditor(key,null,'rename'); }
+function moveDeck(key) { openDeckEditor(key,null,'move'); }
+function openDeckEditor(key = null,parent = null,mode = 'create') {
+ const dialog = $('deckEditor'); dialog.dataset.key = key || ''; dialog.dataset.mode=mode;
+ $('deckEditorTitle').textContent = key ? (mode==='move'?'Переместить колоду':'Переименовать колоду') : parent ? 'Новая подколода' : 'Новая колода';
  $('deckEditorName').value = key ? deckName(key) : '';
  $('deckEditorError').textContent = '';
+ $('deckNameField').classList.toggle('hidden',mode==='move');$('deckParentField').classList.toggle('hidden',mode==='rename');
  const select = $('deckEditorParent'), root = document.createElement('option'); root.value = ''; root.textContent = 'Без родителя — отдельная колода';
  const forbidden = key ? descendantKeys(key) : new Set();
  select.replaceChildren(root,...deckTree().filter(d => !forbidden.has(d.key)).map(d => { const o = deckOption(d.key,d.depth); o.textContent = deckPath(d.key); return o; }));
  select.value = key ? db.deckMeta[key].parent || '' : parent || '';
- dialog.showModal(); $('deckEditorName').focus();
+ dialog.showModal(); $(mode==='move'?'deckEditorParent':'deckEditorName').focus();
 }
 async function saveDeckEditor() {
- const key = $('deckEditor').dataset.key || null, name = $('deckEditorName').value.trim(), parent = $('deckEditorParent').value || null;
+ const key = $('deckEditor').dataset.key || null, mode=$('deckEditor').dataset.mode;
+ const name=mode==='move'?deckName(key):$('deckEditorName').value.trim(),parent=mode==='rename'?db.deckMeta[key].parent:($('deckEditorParent').value||null);
  if (!name || name.length > 200) { $('deckEditorError').textContent = 'Название: от 1 до 200 символов.'; return; }
  const success = await perform(async () => {
   await mutateState(next => {
@@ -120,8 +124,29 @@ async function saveDeckEditor() {
     next.decks.push(created); next.deckMeta[created] = {name,parent};
    }
   });
- });
- if (success) $('deckEditor').close();
+ },{onError:e=>{$('deckEditorError').textContent=e.message;}});
+ if (success) {$('deckEditor').close();showToast(key?(mode==='move'?'Колода перемещена':'Колода переименована'):'Колода создана');}
+}
+function requestDeleteDeck(key) {
+ if(!db.decks.includes(key))return;
+ const scope=descendantKeys(key),count=db.cards.filter(c=>scope.has(c.deck)).length;
+ $('deleteDeckDialog').dataset.key=key;
+ $('deleteDeckTitle').textContent='Удалить «'+deckName(key)+'»?';
+ $('deleteDeckInfo').textContent='Будут удалены: '+scope.size+' колод и '+count+' карточек'+(scope.size>1?', включая подколоды.':'.');
+ $('deleteDeckError').textContent='';$('deleteDeckDialog').showModal();
+}
+async function confirmDeleteDeck() {
+ const key=$('deleteDeckDialog').dataset.key;
+ const success=await perform(async()=>{
+  await mutateState(next=>{
+   if(!next.decks.includes(key))throw new Error('Колода уже удалена.');
+   const scope=descendantKeys(key,next);
+   next.cards=next.cards.filter(c=>!scope.has(c.deck));
+   next.decks=next.decks.filter(d=>!scope.has(d));
+   for(const d of scope)delete next.deckMeta[d];
+  });
+ },{onError:e=>{$('deleteDeckError').textContent=e.message;}});
+ if(success){$('deleteDeckDialog').close();showToast('Колода удалена');}
 }
 function localDayKey(value) {
  const d = new Date(value);
@@ -150,19 +175,19 @@ function statisticsSnapshot(state,deck = '',period = '7',now = Date.now()) {
  const misses = new Map(); for (const r of reviews) if (!r.known) misses.set(r.cardId,(misses.get(r.cardId)||0)+1);
  const difficult = cards.map(c => ({card:c,misses:misses.get(c.id)||0})).filter(c => c.misses).sort((a,b) => b.misses-a.misses).slice(0,5);
  return {cards,reviews,known,rate:reviews.length ? Math.round(known/reviews.length*100) : null,streak:reviewStreak(allReviews,now),buckets,difficult,
-  fresh:cards.filter(c => c.reps===0).length,learning:cards.filter(c => c.reps===1).length,learned:cards.filter(c => c.reps>=2).length,due:cards.filter(c => !c.next||c.next<=now).length};
+  fresh:cards.filter(isNewCard).length,later:cards.filter(c=>reviewStatus(c,now)==='later').length,learning:cards.filter(c => c.reps===1).length,learned:cards.filter(c => c.reps>=2).length,due:cards.filter(c=>isReviewDue(c,now)).length};
 }
 function renderStatistics() {
  if (!ready) return;
  const deck = $('statsDeck').value, period = $('statsPeriod').value;
  const s = statisticsSnapshot(db,deck,period), label = period==='all' ? 'за всё время' : 'за '+period+' дней';
  $('statsAttempts').textContent = s.reviews.length; $('statsRate').textContent = s.rate===null ? '—' : s.rate+'%';
- $('statsStreak').textContent = s.streak; $('statsLearned').textContent = s.learned;
+ $('statsStreak').textContent = s.streak; $('statsLearned').textContent = new Set(s.reviews.map(r=>r.cardId)).size;
  $('statsPeriodLabel').textContent = period==='all' ? 'Повторения за последние 30 дней' : 'Повторения '+label; $('statsScope').textContent = deck ? deckPath(deck)+' · с подколодами' : 'Все колоды';
  $('statsDue').textContent = s.due; $('statsTotal').textContent = s.cards.length;
  $('statsHistoryNote').classList.toggle('hidden',!!db.reviews.length);
  const total = s.cards.length || 1;
- $('statsDistribution').replaceChildren(...[['Новые / повторить',s.fresh,'#a5b3c7'],['Закрепляются',s.learning,'#e6c989'],['Знаю',s.learned,'#8ce0bd']].map(([name,count,color]) => {
+ $('statsDistribution').replaceChildren(...[['Новые',s.fresh,'#a5b3c7'],['Пора повторить',s.due,'#e6c989'],['Повторить позже',s.later,'#8ce0bd']].map(([name,count,color]) => {
   const row = document.createElement('div'); row.className='distribution-row';
   const label = document.createElement('div'); label.className='row';label.innerHTML='<span>'+name+'</span><b class="fit">'+count+'</b>';
   const bar=document.createElement('div');bar.className='progress';const fill=document.createElement('i');fill.style.width=count/total*100+'%';fill.style.background=color;bar.appendChild(fill);row.append(label,bar);return row;

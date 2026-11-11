@@ -110,7 +110,8 @@ const server = {close() {}};
    await page.evaluate(() => show('settings'));
   });
   await check('native TTS and external YouGlish receive correct strings',async () => {
-   await page.evaluate(() => {
+   await page.evaluate(async () => {
+    await mutateState(next=>{next.cards.find(c=>c.word==='abandon').next=Date.now()-1;});
     window.calls=[]; window.AndroidBridge={speakText:(...a)=>calls.push(['speak',...a]),stopSpeech:()=>{},openExternalUrl:u=>calls.push(['url',u]),saveFile:(...a)=>calls.push(['file',...a])};
     openDeck('Oxford 3000'); playDictionaryAudio('uk'); playDictionaryAudio('us'); speakDeckExample(); openYouGlish();
    });
@@ -324,15 +325,24 @@ const server = {close() {}};
    assert.equal(await page.locator('#cardList .listitem').count(),3);
    await page.locator('#libraryDeckFilter').selectOption('');
   });
-  await check('deck rename keeps stable card assignments; sibling collisions are rejected',async()=>{
-   await page.evaluate(key=>renameDeck(key),english);await page.locator('#deckEditorName').fill('English reading');
+  await check('visible deck menu renames and moves; sibling collisions stay inline',async()=>{
+   await page.evaluate(key=>{show('decks');openDeckActions(key);},english);
+   await page.locator('#deckActions').getByRole('button',{name:'Переименовать',exact:true}).click();
+   assert.equal(await page.locator('#deckParentField').isVisible(),false);
+   await page.locator('#deckEditorName').fill('English reading');
    await page.locator('#deckEditor').getByRole('button',{name:'Сохранить',exact:true}).click();await idle();
    assert.equal(await page.evaluate(key=>deckPath(key),grandchild),'English reading / Unit 1 / Examples');
-   await page.evaluate(key=>renameDeck(key),unit);await page.locator('#deckEditorParent').selectOption(travel);
+   await page.evaluate(key=>openDeckActions(key),unit);
+   await page.locator('#deckActions').getByRole('button',{name:'Переместить',exact:true}).click();
+   await page.locator('#deckEditorParent').selectOption(travel);
    await page.locator('#deckEditor').getByRole('button',{name:'Сохранить',exact:true}).click();await idle();
    assert.equal((await state()).deckMeta[unit].parent,english);
    assert.equal(await page.locator('#deckEditor').isVisible(),true);
-   await page.locator('#deckEditorName').fill('Reading');
+   assert.match(await page.locator('#deckEditorError').textContent(),/повторяется название/);
+   await page.locator('#deckEditor').getByRole('button',{name:'Отмена',exact:true}).click();
+   await page.evaluate(key=>renameDeck(key),unit);await page.locator('#deckEditorName').fill('Reading');
+   await page.locator('#deckEditor').getByRole('button',{name:'Сохранить',exact:true}).click();await idle();
+   await page.evaluate(key=>moveDeck(key),unit);await page.locator('#deckEditorParent').selectOption(travel);
    await page.locator('#deckEditor').getByRole('button',{name:'Сохранить',exact:true}).click();await idle();
    assert.equal(await page.evaluate(key=>deckPath(key),grandchild),'Travel / Reading / Examples');
    assert.equal((await state()).cards.find(c=>c.word==='unit-word').deck,unit);
@@ -354,7 +364,7 @@ const server = {close() {}};
    await page.reload();await idle();assert.equal((await state()).reviews.length,n+2);
   });
   await check('review write failure and double tap cannot inflate statistics',async()=>{
-   await page.evaluate(key=>{openDeck(key);revealDeckWord();},unit);
+   await page.evaluate(async key=>{await mutateState(next=>{next.cards.find(c=>c.deck===key).next=Date.now()-1;});openDeck(key);revealDeckWord();},unit);
    const n=(await state()).reviews.length;
    await page.evaluate(async()=>{const original=idbPut;idbPut=async()=>{throw new Error('simulated review write failure');};try{await rateDeckWord(true);}finally{idbPut=original;}});
    assert.equal((await state()).reviews.length,n);
@@ -453,8 +463,8 @@ const server = {close() {}};
    assert.equal((await state()).cards.some(c=>c.word==='ui-safe'),false);await page.evaluate(()=>resetForm());
   });
   await check('library status chips and clear search return the expected cards',async()=>{
-   await page.evaluate(()=>{show('library');document.getElementById('libraryDeckFilter').value='';setLibraryStatus('known');});
-   assert.equal(await page.locator('#cardList .library-card').count(),(await state()).cards.filter(c=>c.reps>=2).length);
+   await page.evaluate(()=>{show('library');document.getElementById('libraryDeckFilter').value='';setLibraryStatus('later');});
+   assert.equal(await page.locator('#cardList .library-card').count(),(await state()).cards.filter(c=>c.next>Date.now()).length);
    await page.locator('#search').fill('no-results-ui-123');assert.equal(await page.locator('#cardList .library-card').count(),0);
    await page.getByRole('button',{name:'Очистить поиск',exact:true}).click();assert.equal(await page.locator('#search').inputValue(),'');
    await page.evaluate(()=>setLibraryStatus('all'));
@@ -469,7 +479,7 @@ const server = {close() {}};
    assert.equal(await page.locator('[data-deck-key="'+unit+'"]').count(),1);assert.equal((await state()).cards.length,before);
   });
   await check('focus training keeps answer controls reachable on a small phone',async()=>{
-   await page.setViewportSize({width:320,height:740});await page.evaluate(key=>{show('decks');openDeck(key);},unit);
+   await page.setViewportSize({width:320,height:740});await page.evaluate(async key=>{await mutateState(next=>{next.cards.find(c=>c.deck===key).next=Date.now()-1;});show('decks');openDeck(key);},unit);
    assert.equal(await page.locator('#bottomNav').isVisible(),false);assert.equal(await page.locator('#appHeader').isVisible(),false);
    await page.locator('#deckReveal').click();await page.locator('#deckRates').scrollIntoViewIfNeeded();
    const box=await page.locator('#deckRates').boundingBox();assert.ok(box.y>=0 && box.y+box.height<=741);
@@ -481,6 +491,45 @@ const server = {close() {}};
    await page.evaluate(key=>{show('decks');openDeckActions(key);},travel);
    assert.equal(await page.evaluate(()=>handleAndroidBack()),true);assert.equal(await page.locator('#deckActions').isVisible(),false);assert.equal(await page.evaluate(()=>activePage),'decks');
   });
+  await check('100 new cards stay out of due counter and schedule survives reopening',async()=>{
+   await page.evaluate(async()=>{await commitState({decks:['Stable'],cards:Array.from({length:100},(_,i)=>({id:'stable-'+i,deck:'Stable',word:'word-'+i,translation:'слово',reps:0,interval:0,next:0,ease:2.5})),reviews:[]});renderAll();show('home');});
+   assert.equal(await page.locator('#due').textContent(),'0');assert.equal(await page.locator('#heroCount').textContent(),'20');
+   await page.locator('#todayAction').click();assert.equal(await page.evaluate(()=>queue.length),20);
+   await page.locator('#revealBtn').click();await page.locator('#rateBtns button').nth(0).click();await idle();
+   const saved=await state();assert.equal(saved.reviews.at(-1).introduced,true);
+   for(let i=0;i<3;i++){await page.reload();await idle();assert.deepEqual(await state(),saved);assert.equal(await page.locator('#due').textContent(),'0');assert.equal(await page.locator('#heroCount').textContent(),'19');}
+   await page.evaluate(()=>{show('decks');openDeck('Stable');});assert.equal(await page.evaluate(()=>deckQueue.length),19);
+   assert.equal(await page.evaluate(()=>deckQueue.includes('stable-0')),false);
+   await page.evaluate(()=>show('library'));await page.locator('[data-status="later"]').click();
+   assert.equal(await page.locator('#cardList .library-card').count(),1);assert.match(await page.locator('.card-schedule').textContent(),/Повторить/);
+   await page.evaluate(()=>{show('settings');});await page.locator('#dailyNewLimit').selectOption('5');
+   await page.reload();await idle();assert.equal(await page.locator('#heroCount').textContent(),'4');
+  });
+  await check('old review-table migration preserves exact deadlines and history',async()=>{
+   const result=await page.evaluate(()=>{const d=createDatabase(db);d.run('DROP TABLE reviews');d.run('CREATE TABLE reviews(id TEXT,card_id TEXT,deck_key TEXT,reviewed_at INTEGER,known INTEGER,interval_days REAL)');d.run("INSERT INTO reviews VALUES('old-review','stable-0','Stable',12345,0,0)");const restored=readDatabase(d);d.close();return restored;});
+   assert.equal(result.reviews[0].introduced,false);assert.equal(result.reviews[0].at,12345);
+   assert.deepEqual(result.cards,(await state()).cards);
+  });
+  await check('delete menu cancels safely, removes descendants and retains other history',async()=>{
+   await page.evaluate(async()=>{await mutateState(next=>{const a=ensureDeckPath(next,['Delete tree','Child']);next.cards.push({id:'deleted-card',deck:a,word:'delete-me',translation:'удалить'});next.reviews.push({id:'deleted-history',cardId:'deleted-card',deck:a,at:Date.now(),known:true,interval:1});});show('decks');openDeckActions('Delete tree');});
+   const saved=await state();await page.locator('#deckActions').getByRole('button',{name:'Удалить колоду',exact:true}).click();
+   assert.match(await page.locator('#deleteDeckInfo').textContent(),/2 колод и 1 карточек/);
+   await page.locator('#deleteDeckDialog').getByRole('button',{name:'Отмена',exact:true}).click();assert.deepEqual(await state(),saved);
+   await page.evaluate(()=>{openDeckActions('Delete tree');});await page.locator('#deckActions').getByRole('button',{name:'Удалить колоду',exact:true}).click();
+   await page.locator('#deleteDeckDialog').getByRole('button',{name:'Удалить',exact:true}).click();await idle();
+   const after=await state();assert.deepEqual(after.cards,saved.cards.filter(c=>c.id!=='deleted-card'));assert.deepEqual(after.reviews,saved.reviews);
+   assert.deepEqual(after.decks,['Stable']);await page.reload();await idle();assert.deepEqual(await state(),after);
+  });
+  await check('failed delete keeps data; deleting last deck stays empty after restart',async()=>{
+   const saved=await state();await page.evaluate(()=>requestDeleteDeck('Stable'));
+   await page.evaluate(async()=>{const original=idbPut;idbPut=async()=>{throw new Error('disk full');};try{await confirmDeleteDeck();}finally{idbPut=original;}});
+   assert.deepEqual(await state(),saved);assert.match(await page.locator('#deleteDeckError').textContent(),/disk full/);
+   await page.locator('#deleteDeckDialog').getByRole('button',{name:'Удалить',exact:true}).click();await idle();
+   await page.reload();await idle();assert.deepEqual((await state()).decks,[]);assert.deepEqual((await state()).cards,[]);
+   await page.evaluate(()=>openNewCard());await page.locator('#fWord').fill('restart');await page.locator('#fTranslation').fill('снова');
+   await page.getByRole('button',{name:'Сохранить карточку',exact:true}).click();await idle();assert.deepEqual((await state()).decks,['Мои слова']);
+   await page.evaluate(()=>saveDailyNewLimit(20));
+  });
   // Reproducible sample data for the UI screenshots; never shipped as user data.
   await page.evaluate(async()=>{
    const demo={decks:['Everyday English','Книги','Путешествия'],cards:[],reviews:[],deckMeta:{'Everyday English':{name:'Everyday English',parent:null},'Книги':{name:'Книги',parent:null},'Путешествия':{name:'Путешествия',parent:null}}};
@@ -490,11 +539,11 @@ const server = {close() {}};
    for(let d=0;d<7;d++)for(let i=0;i<[8,12,5,17,11,15,9][d];i++)demo.reviews.push({id:'demo-review-'+d+'-'+i,cardId:'demo-'+i%24,deck:demo.cards[i%24].deck,at:localDayOffset(Date.now(),d-6).getTime()+10*3600000,known:i%4!==0,interval:3});
    await commitState(demo);renderAll();resetForm();setLibraryStatus('all');show('home');
   });
-  await page.screenshot({path:path.join(output,'ui-home-0.6.1.png'),fullPage:true,animations:'disabled'});
-  await page.evaluate(()=>show('library'));await page.screenshot({path:path.join(output,'ui-library-0.6.1.png'),fullPage:true,animations:'disabled'});
-  await page.evaluate(()=>show('decks'));await page.screenshot({path:path.join(output,'ui-decks-0.6.1.png'),fullPage:true,animations:'disabled'});
-  await page.evaluate(()=>{show('home');startReview();reveal();});await page.screenshot({path:path.join(output,'ui-review-0.6.1.png'),fullPage:true,animations:'disabled'});
-  await page.evaluate(()=>{show('stats');document.getElementById('statsDeck').value='';document.getElementById('statsPeriod').value='7';renderStatistics();});await page.screenshot({path:path.join(output,'ui-stats-0.6.1.png'),fullPage:true,animations:'disabled'});
+  await page.screenshot({path:path.join(output,'ui-home-0.7.0.png'),fullPage:true,animations:'disabled'});
+  await page.evaluate(()=>show('library'));await page.screenshot({path:path.join(output,'ui-library-0.7.0.png'),fullPage:true,animations:'disabled'});
+  await page.evaluate(()=>show('decks'));await page.screenshot({path:path.join(output,'ui-decks-0.7.0.png'),fullPage:true,animations:'disabled'});
+  await page.evaluate(()=>{show('home');startReview();reveal();});await page.screenshot({path:path.join(output,'ui-review-0.7.0.png'),fullPage:true,animations:'disabled'});
+  await page.evaluate(()=>{show('stats');document.getElementById('statsDeck').value='';document.getElementById('statsPeriod').value='7';renderStatistics();});await page.screenshot({path:path.join(output,'ui-stats-0.7.0.png'),fullPage:true,animations:'disabled'});
 
   await page.screenshot({path:path.join(output,'home-phone.png'),fullPage:true,animations:'disabled'});
   assert.deepEqual(pageErrors,[]);assert.deepEqual(external,[]);

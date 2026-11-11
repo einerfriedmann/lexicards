@@ -51,9 +51,10 @@ function updateUIPage(id,previous) {
  window.scrollTo(0,restore ? pageScroll[id] || 0 : 0);
 }
 function leaveFocus() { show(mainPages.includes(focusOrigin) ? focusOrigin : lastMainPage); }
-function beginToday() { if(!db.cards.length)openNewCard();else if(db.cards.some(due))startReview();else show('decks'); }
+function beginToday() { if(!db.cards.length)openNewCard();else if(reviewPlan(db,{newLimit:dailyNewLimit()}).cards.length)startReview();else show('decks'); }
 function initializeUI() {
  decorateIcons();
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ready)renderAll();});
  $('homeDate').textContent=new Date().toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long'}).toUpperCase();
  $('add').addEventListener('input',event=>{
   if(['fWord','fTranslation'].includes(event.target.id)){
@@ -69,12 +70,14 @@ function initializeUI() {
  });
 }
 function renderHomeSummary() {
- const cards=db.cards,pending=cards.filter(due),now=Date.now();
+ const cards=db.cards,now=Date.now(),plan=reviewPlan(db,{now,newLimit:dailyNewLimit()}),pending=plan.cards;
+ $('homeDate').textContent=new Date(now).toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long'}).toUpperCase();
+ $('dailyNewLimit').value=String(dailyNewLimit());
  $('homeStreak').textContent=reviewStreak(db.reviews,now);
  $('heroCount').textContent=cards.length?pending.length:'+';
- $('heroKicker').textContent=!cards.length?'ТВОЙ ПЕРВЫЙ ШАГ':pending.length?'СЕГОДНЯ К ПОВТОРЕНИЮ':'ТЫ В РИТМЕ';
- $('heroDescription').textContent=!cards.length?'Сохрани слово, которое хочется запомнить.':pending.length?'Слова ждут, чтобы ты вспомнил их ещё раз.':'На сегодня всё. Можно изучить что-нибудь новое.';
- $('todayActionLabel').textContent=!cards.length?'Добавить слово':pending.length?'Начать повторение':'Открыть колоды';
+ $('heroKicker').textContent=!cards.length?'ТВОЙ ПЕРВЫЙ ШАГ':pending.length?'ПЛАН НА СЕЙЧАС':'НА СЕЙЧАС ВСЁ';
+ $('heroDescription').textContent=!cards.length?'Сохрани слово, которое хочется запомнить.':pending.length?plan.due.length+' к повторению · '+plan.selectedNew.length+' новых':reviewPlanMessage(plan);
+ $('todayActionLabel').textContent=!cards.length?'Добавить слово':pending.length?'Начать занятие':'Открыть колоды';
  const today=localDayOffset(now,0).getTime(),done=new Set(db.reviews.filter(r=>r.at>=today&&r.at<=now).map(r=>r.cardId)),dueIds=new Set(pending.map(c=>c.id));
  const complete=[...done].filter(id=>!dueIds.has(id)).length,total=new Set([...done,...dueIds]).size;
  $('progressText').textContent=done.size?'Сегодня разобрано: '+done.size:cards.length?'Каждая карточка — маленький шаг':'Начни с одного слова';
@@ -100,8 +103,8 @@ function openDeckActions(key) {
  const cards=db.cards.filter(c=>descendantKeys(key).has(c.deck));
  $('deckActionsTitle').textContent=deckName(key);$('deckActionsInfo').textContent=deckPath(key)+' · '+cards.length+' карточек';
  const menu=$('deckActionsButtons');menu.replaceChildren();
- for(const [name,label,handler] of [['cards','Учить эту колоду',()=>openDeck(key)],['plus','Добавить подколоду',()=>newDeck(key)],['sliders','Название и расположение',()=>renameDeck(key)]]){
-  const b=iconButton(name,label,()=>{$('deckActions').close();handler();},'');const text=document.createElement('span');text.textContent=label;b.appendChild(text);menu.appendChild(b);
+ for(const [name,label,handler] of [['cards','Учить эту колоду',()=>openDeck(key)],['plus','Добавить подколоду',()=>newDeck(key)],['edit','Переименовать',()=>renameDeck(key)],['folder','Переместить',()=>moveDeck(key)],['trash','Удалить колоду',()=>requestDeleteDeck(key)]]){
+  const b=iconButton(name,label,()=>{$('deckActions').close();handler();},name==='trash'?'danger':'');const text=document.createElement('span');text.textContent=label;b.appendChild(text);menu.appendChild(b);
  }
  $('deckActions').showModal();
 }
@@ -126,7 +129,7 @@ function buildDeckNode(key) {
  else {const space=document.createElement('span');space.className='deck-toggle placeholder';row.appendChild(space);}
  const folder=document.createElement('span');folder.className='folder-icon '+folderTone(key);folder.innerHTML=icon('folder');row.appendChild(folder);
  const main=document.createElement('button');main.className='deck-node-main';main.setAttribute('aria-label','Учить колоду '+deckName(key));main.onclick=()=>openDeck(key);
- const title=document.createElement('b');title.textContent=deckName(key);const subtitle=document.createElement('small');subtitle.textContent=cards.length+' слов · '+cards.filter(due).length+' пора учить';main.append(title,subtitle);row.appendChild(main);
+ const title=document.createElement('b');title.textContent=deckName(key);const subtitle=document.createElement('small');subtitle.textContent=cards.length+' слов · '+cards.filter(due).length+' к повторению · '+cards.filter(isNewCard).length+' новых';main.append(title,subtitle);row.appendChild(main);
  row.appendChild(iconButton('more','Действия с колодой '+deckName(key),()=>openDeckActions(key),'deck-menu'));return row;
 }
 function discardEditorDraft() { if(!confirm('Удалить несохранённый черновик этой карточки?'))return;resetForm();leaveFocus();showToast('Черновик удалён'); }
@@ -136,9 +139,16 @@ function validateCardForm(fields) {
  $('formError').textContent=field==='fWord'?'Добавь слово или выражение.':'Добавь перевод, чтобы карточку можно было повторять.';$('formError').classList.remove('hidden');$(field).setAttribute('aria-invalid','true');$(field).focus();return false;
 }
 function nextIntervalLabel(c) {
- const reps=(c.reps||0)+1,days=reps===1?1:reps===2?3:Math.min(36500,Math.round((c.interval||3)*(c.ease||2.5)));
+ const days=scheduledAnswer(c,true).interval;
  return days===1?'завтра':'через '+days+' дн.';
 }
+function reviewPlanMessage(plan) {
+ const parts=[];
+ if(plan.nextAt)parts.push('Ближайшее повторение: '+new Intl.DateTimeFormat('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}).format(plan.nextAt)+'.');
+ if(plan.newCards.length&&!plan.newRemaining)parts.push('Лимит новых слов на сегодня выполнен. Следующие — завтра.');
+ return parts.join(' ')||'Добавь новые слова, когда захочешь.';
+}
 function renderReviewCompletion() {
- $('reviewEmpty').innerHTML='<div class="empty"><span class="empty-icon">'+icon('check-circle')+'</span><h2>Хорошая работа.</h2><p>Все карточки этой сессии разобраны.<br>Можно продолжить с другой колодой.</p><button class="primary-button" onclick="show(\'decks\')">Открыть колоды '+icon('arrow-right')+'</button><button class="text-button full-width" onclick="show(\'home\')">На главную</button></div>';
+ const plan=reviewPlan(db,{newLimit:dailyNewLimit()});
+ $('reviewEmpty').innerHTML='<div class="empty"><span class="empty-icon">'+icon('check-circle')+'</span><h2>'+(queue.length?'Сессия завершена.':'На сейчас всё.')+'</h2><p>'+esc(reviewPlanMessage(plan))+'</p><button class="primary-button" onclick="show(\'home\')">На главную '+icon('arrow-right')+'</button></div>';
 }

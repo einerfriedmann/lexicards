@@ -12,7 +12,7 @@ const $ = id => document.getElementById(id);
 const clone = value => JSON.parse(JSON.stringify(value));
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = () => window.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
-const due = c => !c.next || c.next <= Date.now();
+const due = c => isReviewDue(c,Date.now());
 const number = (v, fallback, min, max) => Number.isFinite(Number(v)) ? Math.min(max, Math.max(min, Number(v))) : fallback;
 function text(v, limit = 20000) {
  const value = String(v ?? '');
@@ -36,7 +36,7 @@ function normalizeState(state) {
    reps:Math.floor(number(raw.reps, 0, 0, 10000)), interval:number(raw.interval, 0, 0, 36500),
    ease:number(raw.ease ?? 2.5, 2.5, 1.3, 5), next:number(raw.next, 0, 0, 8640000000000000)};
  });
- const deckKeys = decks.length ? decks : [...DEFAULT_DECKS];
+ const deckKeys = decks;
  return {decks:deckKeys,cards,deckMeta:normalizeDeckMeta(state,deckKeys),reviews:normalizeReviewHistory(state.reviews)};
 }
 function idbOpen() {
@@ -70,7 +70,7 @@ function createDatabase(state) {
  const candidate = new SQL.Database();
  try {
   candidate.run('CREATE TABLE decks (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, label TEXT NOT NULL, parent_key TEXT)');
-  candidate.run('CREATE TABLE reviews (id TEXT PRIMARY KEY, card_id TEXT NOT NULL, deck_key TEXT NOT NULL, reviewed_at INTEGER NOT NULL, known INTEGER NOT NULL, interval_days REAL NOT NULL)');
+  candidate.run('CREATE TABLE reviews (id TEXT PRIMARY KEY, card_id TEXT NOT NULL, deck_key TEXT NOT NULL, reviewed_at INTEGER NOT NULL, known INTEGER NOT NULL, interval_days REAL NOT NULL, introduced INTEGER NOT NULL DEFAULT 0)');
   candidate.run('CREATE INDEX idx_reviews_date ON reviews(reviewed_at)');
   candidate.run("CREATE TABLE cards (id TEXT PRIMARY KEY, deck_name TEXT NOT NULL, word TEXT NOT NULL, translation TEXT NOT NULL, ipa TEXT DEFAULT '', example TEXT DEFAULT '', example_ru TEXT DEFAULT '', reps INTEGER DEFAULT 0, interval_days REAL DEFAULT 0, ease REAL DEFAULT 2.5, next_review INTEGER DEFAULT 0)");
   candidate.run('CREATE INDEX idx_cards_deck ON cards(deck_name)');
@@ -79,8 +79,8 @@ function createDatabase(state) {
   try { state.decks.forEach(d => ds.run([d,state.deckMeta[d].name,state.deckMeta[d].parent])); } finally { ds.free(); }
   const cs = candidate.prepare('INSERT INTO cards VALUES(?,?,?,?,?,?,?,?,?,?,?)');
   try { state.cards.forEach(c => cs.run([c.id,c.deck,c.word,c.translation,c.ipa,c.example,c.exampleRu,c.reps,c.interval,c.ease,c.next])); } finally { cs.free(); }
-  const rs = candidate.prepare('INSERT INTO reviews VALUES(?,?,?,?,?,?)');
-  try { state.reviews.forEach(r => rs.run([r.id,r.cardId,r.deck,r.at,r.known ? 1 : 0,r.interval])); } finally { rs.free(); }
+  const rs = candidate.prepare('INSERT INTO reviews VALUES(?,?,?,?,?,?,?)');
+  try { state.reviews.forEach(r => rs.run([r.id,r.cardId,r.deck,r.at,r.known ? 1 : 0,r.interval,r.introduced ? 1 : 0])); } finally { rs.free(); }
   candidate.run('COMMIT'); return candidate;
  } catch (e) { candidate.close(); throw e; }
 }
@@ -104,8 +104,9 @@ function readDatabase(source) {
     if (metadata.length) metadata[0].values.forEach(v => { deckMeta[v[0]] = {name:v[1],parent:v[2]}; });
    }
   }
-  const history = names.includes('reviews') ? source.exec('SELECT id,card_id,deck_key,reviewed_at,known,interval_days FROM reviews') : [];
-  return normalizeState({decks:deckKeys,deckMeta,reviews:history.length ? history[0].values.map(v => ({id:v[0],cardId:v[1],deck:v[2],at:v[3],known:v[4],interval:v[5]})) : [],
+  const reviewColumns=names.includes('reviews')?source.exec('PRAGMA table_info(reviews)')[0].values.map(v=>v[1]):[];
+  const history = names.includes('reviews') ? source.exec('SELECT id,card_id,deck_key,reviewed_at,known,interval_days,'+(reviewColumns.includes('introduced')?'introduced':'0')+' FROM reviews') : [];
+  return normalizeState({decks:deckKeys,deckMeta,reviews:history.length ? history[0].values.map(v => ({id:v[0],cardId:v[1],deck:v[2],at:v[3],known:v[4],interval:v[5],introduced:v[6]})) : [],
    cards:result.length ? result[0].values.map(v => ({id:v[0],deck:v[1],word:v[2],translation:v[3],ipa:v[4],example:v[5],exampleRu:v[6],reps:v[7],interval:v[8],ease:v[9],next:v[10]})) : []});
  }
  if (names.includes('app_state')) {
@@ -127,13 +128,13 @@ function mutateState(change) {
  });
  persistChain = operation; return operation;
 }
-async function perform(action) {
+async function perform(action,options={}) {
  if (!ready || actionBusy) return false;
  actionBusy = true;
  const buttons = Array.from(document.querySelectorAll('button')).map(b => [b,b.disabled]);
  buttons.forEach(([b]) => { b.disabled = true; });
  try { await action(); return true; }
- catch (e) { console.error(e); alert('Не удалось выполнить действие: ' + e.message + '\nТекущие данные сохранены без изменений.'); return false; }
+ catch (e) { console.error(e); if(options.onError)options.onError(e);else alert('Не удалось выполнить действие: ' + e.message + '\nТекущие данные сохранены без изменений.'); return false; }
  finally { actionBusy = false; buttons.forEach(([b,disabled]) => { b.disabled = disabled; }); }
 }
 async function bootstrap() {
@@ -182,22 +183,19 @@ function deckRow(key,editable) { return editable ? buildDeckNode(key) : buildHom
 function renderAll() {
  $('total').textContent = db.cards.length;
  $('due').textContent = db.cards.filter(due).length;
- const known = db.cards.filter(c => c.reps >= 2).length;
- $('known').textContent = known;
- $('progressText').textContent = db.cards.length ? known + ' из ' + db.cards.length + ' слов уже закрепляются' : 'Добавь первую карточку';
- $('progressBar').style.width = (db.cards.length ? known / db.cards.length * 100 : 0) + '%';
+ $('known').textContent=db.cards.filter(isNewCard).length;
  renderDeckTree('deckHome',false); renderDeckTree('deckList',true);
  fillHierarchyFilter('libraryDeckFilter'); fillHierarchyFilter('statsDeck');
  renderLibrary(); fillDeckSelect(); renderHomeSummary(); if (activePage==='stats') renderStatistics();
 }
 function renderLibrary() {
  const term=$('search').value.toLowerCase().trim(),filter=$('libraryDeckFilter').value,scope=filter?descendantKeys(filter):null;
- const cards=db.cards.filter(c=>(!scope||scope.has(c.deck))&&(libraryStatus!=='due'||due(c))&&(libraryStatus!=='known'||c.reps>=2)&&(c.word+' '+c.translation).toLowerCase().includes(term));
+ const cards=db.cards.filter(c=>(!scope||scope.has(c.deck))&&(libraryStatus!=='due'||due(c))&&(libraryStatus!=='new'||isNewCard(c))&&(libraryStatus!=='later'||reviewStatus(c)==='later')&&(c.word+' '+c.translation).toLowerCase().includes(term));
  $('clearSearch').classList.toggle('hidden',!$('search').value);$('libraryResultCount').textContent=cards.length+' карточек'+(filter?' · '+deckPath(filter):'');
  const elements=cards.map(c=>{
   const row=document.createElement('div');row.className='listitem library-card';
   const main=document.createElement('button');main.className='library-card-main';main.setAttribute('aria-label','Редактировать '+c.word);main.onclick=()=>editCard(c.id);
-  main.innerHTML='<b>'+esc(c.word)+'</b><span class="card-translation">'+esc(c.translation)+'</span><span class="card-location">'+esc(deckPath(c.deck))+'</span>';
+  main.innerHTML='<b>'+esc(c.word)+'</b><span class="card-translation">'+esc(c.translation)+'</span><span class="card-location">'+esc(deckPath(c.deck))+'</span><span class="card-schedule schedule-'+reviewStatus(c)+'">'+esc(reviewDateLabel(c))+'</span>';
   const actions=document.createElement('div');actions.className='library-card-actions';
   actions.append(iconButton('sound','Произнести '+c.word,()=>speakFallback(c.word,'us')),iconButton('more','Действия с карточкой '+c.word,()=>openCardActions(c.id)));
   row.append(main,actions);return row;
@@ -212,6 +210,7 @@ function renderLibrary() {
 function fillDeckSelect() {
  const select = $('fDeck'), previous = select.value;
  select.replaceChildren(...deckTree().map(d => { const o = deckOption(d.key,d.depth); o.textContent = deckPath(d.key); return o; }));
+ if (!db.decks.length){const option=document.createElement('option');option.value='Мои слова';option.textContent='Мои слова — новая колода';select.appendChild(option);}
  if (db.decks.includes(previous)) select.value = previous;
 }
 function resetForm() {
@@ -251,7 +250,7 @@ function deleteCard(id) {
 
 function startReview() {
  if (!ready || actionBusy) return;
- stopSpeech(); queue = db.cards.filter(due).sort((a,b) => a.next - b.next).map(c => c.id); qIndex = 0; current = null;
+ stopSpeech(); queue = reviewPlan(db,{newLimit:dailyNewLimit()}).cards.map(c=>c.id); qIndex = 0; current = null;
  show('review'); drawReview();
 }
 function drawReview() {
@@ -272,23 +271,20 @@ function reveal() {
  $('backNote').textContent = current.exampleRu; $('reviewSpeakExample').classList.toggle('hidden',!current.example.trim());
  $('answer').classList.remove('hidden'); $('rateBtns').classList.remove('hidden'); $('revealBtn').classList.add('hidden');
 }
-function schedule(c, known) {
- if (known) {
-  c.reps++; c.interval = c.reps === 1 ? 1 : c.reps === 2 ? 3 : Math.min(36500,Math.round((c.interval || 3) * c.ease));
-  c.ease = Math.min(5,c.ease + 0.1); c.next = Date.now() + c.interval * 86400000;
- } else { c.reps = 0; c.interval = 0; c.ease = Math.max(1.3,c.ease - 0.2); c.next = Date.now() + 10 * 60000; }
-}
+function schedule(c,known,now=Date.now()) { Object.assign(c,scheduledAnswer(c,known,now)); }
+function recordAnswer(next,c,known) { const now=Date.now(),introduced=isNewCard(c);schedule(c,known,now);next.reviews.push({id:uid(),cardId:c.id,deck:c.deck,at:now,known:!!known,interval:c.interval,introduced}); }
+
 function rate(known) {
  if (!current || $('rateBtns').classList.contains('hidden')) return;
  const id = current.id;
  return perform(async () => {
-  await mutateState(next => { const c = next.cards.find(c => c.id === id); if (c) { schedule(c,known); next.reviews.push({id:uid(),cardId:c.id,deck:c.deck,at:Date.now(),known:!!known,interval:c.interval}); } });
+  await mutateState(next => { const c = next.cards.find(c => c.id === id); if (c) recordAnswer(next,c,known); });
   stopSpeech(); qIndex++; drawReview();
  });
 }
 function openDeck(name) {
  if (!ready || actionBusy) return;
- stopSpeech(); studyDeck = name; deckQueue = db.cards.filter(c => descendantKeys(name).has(c.deck)).sort((a,b) => a.next - b.next).map(c => c.id);
+ stopSpeech(); studyDeck = name; deckQueue = reviewPlan(db,{scope:descendantKeys(name),newLimit:dailyNewLimit()}).cards.map(c=>c.id);
  deckIndex = 0; deckCurrent = null; $('deckStudyTitle').textContent = 'Тренировка · ' + deckPath(name);
  show('deckStudy'); drawDeckWord();
 }
@@ -300,8 +296,8 @@ function drawDeckWord() {
  $('deckProgress').style.width=(deckQueue.length?deckIndex/deckQueue.length*100:100)+'%';
  $('deckTools').classList.toggle('hidden',!c); $('deckEmpty').classList.toggle('hidden',!!c);
  $('deckAnswer').classList.add('hidden'); $('deckRates').classList.add('hidden'); $('deckReveal').classList.toggle('hidden',!c);
- if(!c){$('deckEmpty').innerHTML='<span class="empty-icon">'+icon(deckQueue.length?'check-circle':'folder')+'</span><h2>'+(deckQueue.length?'Колода завершена.':'Пока нет слов.')+'</h2><p>'+(deckQueue.length?'Ты разобрал все карточки этой сессии.':'Добавь первое слово в свою коллекцию.')+'</p><button class="primary-button" onclick="leaveFocus()">К колодам</button>';return;}
- deckCurrent = c; $('deckCardLocation').textContent = deckPath(c.deck); $('deckWord').textContent = c.word; $('deckIpa').textContent=c.ipa||'';$('deckIpa').classList.toggle('hidden',!c.ipa);$('deckNextInterval').textContent=nextIntervalLabel(c);
+ if(!c){const plan=reviewPlan(db,{scope:descendantKeys(studyDeck),newLimit:dailyNewLimit()});$('deckEmpty').innerHTML='<span class="empty-icon">'+icon(deckQueue.length?'check-circle':'folder')+'</span><h2>'+(deckQueue.length?'Колода завершена.':'На сейчас всё.')+'</h2><p>'+esc(reviewPlanMessage(plan))+'</p><button class="primary-button" onclick="leaveFocus()">К колодам</button>';return;}
+ deckCurrent = c; $('deckCardLocation').textContent = deckPath(c.deck)+' · '+(isNewCard(c)?'новое слово':'повторение'); $('deckWord').textContent = c.word; $('deckIpa').textContent=c.ipa||'';$('deckIpa').classList.toggle('hidden',!c.ipa);$('deckNextInterval').textContent=nextIntervalLabel(c);
  $('deckTranslation').textContent = c.translation; $('deckExample').textContent = c.example || 'Пример пока не добавлен.';
  $('speakExampleBtn').classList.toggle('hidden',!c.example.trim()); $('deckExampleRu').textContent = c.exampleRu;
 }
@@ -313,7 +309,7 @@ function rateDeckWord(known) {
  if (!deckCurrent || $('deckRates').classList.contains('hidden')) return;
  const id = deckCurrent.id;
  return perform(async () => {
-  await mutateState(next => { const c = next.cards.find(c => c.id === id); if (c) { schedule(c,known); next.reviews.push({id:uid(),cardId:c.id,deck:c.deck,at:Date.now(),known:!!known,interval:c.interval}); } });
+  await mutateState(next => { const c = next.cards.find(c => c.id === id); if (c) recordAnswer(next,c,known); });
   stopSpeech(); deckIndex++; drawDeckWord();
  });
 }
