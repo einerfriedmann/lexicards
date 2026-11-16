@@ -34,6 +34,7 @@ const server = {close() {}};
  async function check(name,fn) { await fn(); passed.push(name); console.log('PASS',name); }
  async function idle() { await page.waitForFunction(() => ready && !actionBusy); }
  async function state() { return page.evaluate(() => clone(db)); }
+ async function skipExample(){await page.locator('#exampleComposerSkip').click();await page.waitForFunction(()=>exampleComposer===null);}
  async function inputCSV(csv) {
   await page.locator('#csvFile').setInputFiles({name:'test.csv',mimeType:'text/csv',buffer:Buffer.from(csv)}); await idle();
  }
@@ -70,7 +71,7 @@ const server = {close() {}};
   await check('empty review then new due card and multiple review sessions',async () => {
    await page.evaluate(() => startReview()); assert.equal(await page.locator('#reviewCard').isVisible(),false);
    await page.evaluate(async () => { await mutateState(next => { next.cards[0].next=0; }); startReview(); });
-   await page.locator('#revealBtn').click(); await page.locator('#rateBtns button').nth(0).click(); await idle();
+   await page.locator('#revealBtn').click(); await page.locator('#rateBtns button').nth(0).click(); await idle();await skipExample();
    const failed = (await state()).cards[0]; assert.equal(failed.reps,0); assert.ok(failed.next > Date.now()+500000);
    await page.evaluate(() => startReview()); assert.equal(await page.locator('#reviewCard').isVisible(),false);
    await page.evaluate(async () => { await mutateState(next => { next.cards[0].next=0; }); startReview(); });
@@ -232,7 +233,7 @@ const server = {close() {}};
    assert.equal(await page.locator('#sharedTextPreview img').count(),0);
    await page.screenshot({path:path.join(output,'share-choice-phone.png'),fullPage:true,animations:'disabled'});
    await page.locator('#shareToExample').click();
-   assert.equal(await page.locator('#fExample').inputValue(),value);
+   assert.equal(await page.locator('#additionalExamples [data-example-text]').last().inputValue(),value);
    assert.equal(await page.evaluate(()=>window.shareInjected),undefined);
   });
   await check('failed draft write does not acknowledge or change the form',async()=>{
@@ -248,7 +249,7 @@ const server = {close() {}};
    assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('test-share-inbox')).length),1);
    await page.evaluate(()=>{Storage.prototype.setItem=window.realCaptureSet;});
    await page.locator('#shareToExample').click();
-   assert.equal(await page.locator('#fExample').inputValue(),'A safely retried example.');
+   assert.equal(await page.locator('#additionalExamples [data-example-text]').last().inputValue(),'A safely retried example.');
   });
   await check('duplicate native delivery after restart cannot overwrite a newer draft',async()=>{
    await page.evaluate(()=>localStorage.setItem('test-share-ack-fails','1'));
@@ -270,12 +271,12 @@ const server = {close() {}};
    await page.waitForFunction(()=>document.getElementById('sharedTextPreview').textContent==='Collect words while you read.');
    await page.locator('#shareToExample').click();
    assert.equal(await page.locator('#fWord').inputValue(),'collect');
-   assert.equal(await page.locator('#fExample').inputValue(),'Collect words while you read.');
+   assert.equal(await page.locator('#additionalExamples [data-example-text]').last().inputValue(),'Collect words while you read.');
   });
   await check('shared draft becomes a card only on explicit save and clears the draft',async()=>{
    await page.getByRole('button',{name:'Сохранить карточку',exact:true}).click();await idle();
    const c=(await state()).cards.find(c=>c.word==='collect');
-   assert.equal(c.example,'Collect words while you read.');assert.equal(c.translation,'захватывать');
+   assert.equal(c.examples.at(-1).text,'Collect words while you read.');assert.equal(c.translation,'захватывать');
    assert.equal((await state()).cards.length,sharedBefore+1);
    assert.equal(await page.evaluate(()=>captureEnvelope().draft),null);
   });
@@ -284,10 +285,10 @@ const server = {close() {}};
    await page.evaluate(id=>editCard(id),c.id);
    await sendShared('existing-example','A new example for an existing card.');await page.locator('#shareToExample').click();
    await page.evaluate(id=>{show('library');editCard(id);},c.id);
-   assert.equal(await page.locator('#fExample').inputValue(),'A new example for an existing card.');
+   assert.equal(await page.locator('#additionalExamples [data-example-text]').last().inputValue(),'A new example for an existing card.');
    await page.getByRole('button',{name:'Сохранить карточку',exact:true}).click();await idle();
    const updated=(await state()).cards.find(x=>x.id===c.id);
-   assert.equal(updated.example,'A new example for an existing card.');assert.equal(updated.reps,c.reps);assert.equal(updated.next,c.next);
+   assert.equal(updated.examples.at(-1).text,'A new example for an existing card.');assert.equal(updated.example,c.example);assert.equal(updated.reps,c.reps);assert.equal(updated.next,c.next);
   });
 
 
@@ -356,7 +357,7 @@ const server = {close() {}};
   await check('real training persists review events atomically with scheduling',async()=>{
    const n=(await state()).reviews.length;
    await page.evaluate(key=>openDeck(key),unit);
-   await page.locator('#deckReveal').click();await page.locator('#deckRates button').nth(0).click();await idle();
+   await page.locator('#deckReveal').click();await page.locator('#deckRates button').nth(0).click();await idle();await skipExample();
    await page.locator('#deckReveal').click();await page.locator('#deckRates button').nth(1).click();await idle();
    const history=(await state()).reviews;assert.equal(history.length,n+2);
    assert.deepEqual(history.slice(-2).map(r=>r.known),[false,true]);
@@ -495,7 +496,7 @@ const server = {close() {}};
    await page.evaluate(async()=>{await commitState({decks:['Stable'],cards:Array.from({length:100},(_,i)=>({id:'stable-'+i,deck:'Stable',word:'word-'+i,translation:'слово',reps:0,interval:0,next:0,ease:2.5})),reviews:[]});renderAll();show('home');});
    assert.equal(await page.locator('#due').textContent(),'0');assert.equal(await page.locator('#heroCount').textContent(),'20');
    await page.locator('#todayAction').click();assert.equal(await page.evaluate(()=>queue.length),20);
-   await page.locator('#revealBtn').click();await page.locator('#rateBtns button').nth(0).click();await idle();
+   await page.locator('#revealBtn').click();await page.locator('#rateBtns button').nth(0).click();await idle();await skipExample();
    const saved=await state();assert.equal(saved.reviews.at(-1).introduced,true);
    for(let i=0;i<3;i++){await page.reload();await idle();assert.deepEqual(await state(),saved);assert.equal(await page.locator('#due').textContent(),'0');assert.equal(await page.locator('#heroCount').textContent(),'19');}
    await page.evaluate(()=>{show('decks');openDeck('Stable');});assert.equal(await page.evaluate(()=>deckQueue.length),19);

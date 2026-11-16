@@ -32,7 +32,8 @@ function normalizeState(state) {
   ids.add(id);
   const deck = text(raw.deck || 'My words', 200).trim() || 'My words';
   if (!decks.includes(deck)) decks.push(deck);
-  return {id, word, translation, deck, ipa:text(raw.ipa), example:text(raw.example), exampleRu:text(raw.exampleRu),
+  const examples=cardExamples(raw);
+  return {id, word, translation, deck, ipa:text(raw.ipa),examples,example:examples[0]?.text||'',exampleRu:examples[0]?.translation||'',
    reps:Math.floor(number(raw.reps, 0, 0, 10000)), interval:number(raw.interval, 0, 0, 36500),
    ease:number(raw.ease ?? 2.5, 2.5, 1.3, 5), next:number(raw.next, 0, 0, 8640000000000000)};
  });
@@ -72,13 +73,13 @@ function createDatabase(state) {
   candidate.run('CREATE TABLE decks (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, label TEXT NOT NULL, parent_key TEXT)');
   candidate.run('CREATE TABLE reviews (id TEXT PRIMARY KEY, card_id TEXT NOT NULL, deck_key TEXT NOT NULL, reviewed_at INTEGER NOT NULL, known INTEGER NOT NULL, interval_days REAL NOT NULL, introduced INTEGER NOT NULL DEFAULT 0)');
   candidate.run('CREATE INDEX idx_reviews_date ON reviews(reviewed_at)');
-  candidate.run("CREATE TABLE cards (id TEXT PRIMARY KEY, deck_name TEXT NOT NULL, word TEXT NOT NULL, translation TEXT NOT NULL, ipa TEXT DEFAULT '', example TEXT DEFAULT '', example_ru TEXT DEFAULT '', reps INTEGER DEFAULT 0, interval_days REAL DEFAULT 0, ease REAL DEFAULT 2.5, next_review INTEGER DEFAULT 0)");
+  candidate.run("CREATE TABLE cards (id TEXT PRIMARY KEY, deck_name TEXT NOT NULL, word TEXT NOT NULL, translation TEXT NOT NULL, ipa TEXT DEFAULT '', example TEXT DEFAULT '', example_ru TEXT DEFAULT '', reps INTEGER DEFAULT 0, interval_days REAL DEFAULT 0, ease REAL DEFAULT 2.5, next_review INTEGER DEFAULT 0, examples_json TEXT NOT NULL)");
   candidate.run('CREATE INDEX idx_cards_deck ON cards(deck_name)');
   candidate.run('BEGIN');
   const ds = candidate.prepare('INSERT INTO decks(name,label,parent_key) VALUES(?,?,?)');
   try { state.decks.forEach(d => ds.run([d,state.deckMeta[d].name,state.deckMeta[d].parent])); } finally { ds.free(); }
-  const cs = candidate.prepare('INSERT INTO cards VALUES(?,?,?,?,?,?,?,?,?,?,?)');
-  try { state.cards.forEach(c => cs.run([c.id,c.deck,c.word,c.translation,c.ipa,c.example,c.exampleRu,c.reps,c.interval,c.ease,c.next])); } finally { cs.free(); }
+  const cs = candidate.prepare('INSERT INTO cards VALUES(?,?,?,?,?,?,?,?,?,?,?,?)');
+  try { state.cards.forEach(c => cs.run([c.id,c.deck,c.word,c.translation,c.ipa,c.example,c.exampleRu,c.reps,c.interval,c.ease,c.next,JSON.stringify(c.examples)])); } finally { cs.free(); }
   const rs = candidate.prepare('INSERT INTO reviews VALUES(?,?,?,?,?,?,?)');
   try { state.reviews.forEach(r => rs.run([r.id,r.cardId,r.deck,r.at,r.known ? 1 : 0,r.interval,r.introduced ? 1 : 0])); } finally { rs.free(); }
   candidate.run('COMMIT'); return candidate;
@@ -92,7 +93,7 @@ function readDatabase(source) {
   for (const name of ['id','deck_name','word','translation','ipa','example','example_ru','reps','interval_days','ease','next_review']) {
    if (!columns.includes(name)) throw new Error('В базе нет поля cards.' + name + '. Импорт отменён.');
   }
-  const result = source.exec('SELECT id,deck_name,word,translation,ipa,example,example_ru,reps,interval_days,ease,next_review FROM cards');
+  const result = source.exec('SELECT id,deck_name,word,translation,ipa,example,example_ru,reps,interval_days,ease,next_review,'+(columns.includes('examples_json')?'examples_json':'NULL')+' FROM cards');
   const ds = names.includes('decks') ? source.exec('SELECT name FROM decks ORDER BY id') : [];
   const deckKeys = ds.length ? ds[0].values.map(v => v[0]) : [];
   const deckMeta = Object.create(null);
@@ -107,7 +108,7 @@ function readDatabase(source) {
   const reviewColumns=names.includes('reviews')?source.exec('PRAGMA table_info(reviews)')[0].values.map(v=>v[1]):[];
   const history = names.includes('reviews') ? source.exec('SELECT id,card_id,deck_key,reviewed_at,known,interval_days,'+(reviewColumns.includes('introduced')?'introduced':'0')+' FROM reviews') : [];
   return normalizeState({decks:deckKeys,deckMeta,reviews:history.length ? history[0].values.map(v => ({id:v[0],cardId:v[1],deck:v[2],at:v[3],known:v[4],interval:v[5],introduced:v[6]})) : [],
-   cards:result.length ? result[0].values.map(v => ({id:v[0],deck:v[1],word:v[2],translation:v[3],ipa:v[4],example:v[5],exampleRu:v[6],reps:v[7],interval:v[8],ease:v[9],next:v[10]})) : []});
+   cards:result.length ? result[0].values.map(v => ({id:v[0],deck:v[1],word:v[2],translation:v[3],ipa:v[4],example:v[5],exampleRu:v[6],reps:v[7],interval:v[8],ease:v[9],next:v[10],examples:v[11]==null?undefined:JSON.parse(v[11])})) : []});
  }
  if (names.includes('app_state')) {
   const old = source.exec('SELECT payload FROM app_state WHERE id=1');
@@ -135,7 +136,7 @@ async function perform(action,options={}) {
  buttons.forEach(([b]) => { b.disabled = true; });
  try { await action(); return true; }
  catch (e) { console.error(e); if(options.onError)options.onError(e);else alert('Не удалось выполнить действие: ' + e.message + '\nТекущие данные сохранены без изменений.'); return false; }
- finally { actionBusy = false; buttons.forEach(([b,disabled]) => { b.disabled = disabled; }); }
+ finally { actionBusy = false; buttons.forEach(([b,disabled]) => { b.disabled = disabled; }); if(ready)for(const scope of ['review','deck']){const card=exampleCard(scope);if(card)renderExamples(scope,card);} }
 }
 async function bootstrap() {
  try {
@@ -145,7 +146,7 @@ async function bootstrap() {
    const existing = new SQL.Database(new Uint8Array(bytes));
    try { db = readDatabase(existing); sqlDb = existing; } catch (e) { existing.close(); throw e; }
   } else { await commitState(db); }
-  ready = true; initializeUI(); renderAll(); initializeCapture(); show('home'); receiveSharedTextFromNative();
+  ready = true; initializeUI(); initializeExamples(); renderAll(); initializeCapture(); show('home'); receiveSharedTextFromNative();
   $('sqliteStatus').textContent = 'SQLite готова. Автоматическое сохранение на устройстве.';
  } catch (e) {
   console.error(e);
@@ -186,7 +187,7 @@ function renderAll() {
  $('known').textContent=db.cards.filter(isNewCard).length;
  renderDeckTree('deckHome',false); renderDeckTree('deckList',true);
  fillHierarchyFilter('libraryDeckFilter'); fillHierarchyFilter('statsDeck');
- renderLibrary(); fillDeckSelect(); renderHomeSummary(); if (activePage==='stats') renderStatistics();
+ renderLibrary(); fillDeckSelect(); renderHomeSummary(); renderExampleDraftResume(); if (activePage==='stats') renderStatistics();
 }
 function renderLibrary() {
  const term=$('search').value.toLowerCase().trim(),filter=$('libraryDeckFilter').value,scope=filter?descendantKeys(filter):null;
@@ -214,7 +215,7 @@ function fillDeckSelect() {
  if (db.decks.includes(previous)) select.value = previous;
 }
 function resetForm() {
- editing = null;
+ editing = null;editorFirstExampleId=uid();editorExamplesBase=[];renderAdditionalExamples();
  ['fWord','fTranslation','fIpa','fExample','fExampleRu'].forEach(id => { $(id).value = ''; });
  $('formTitle').textContent = 'Новая карточка';
  clearFormError(); $('optionalCardFields').open=false;
@@ -225,19 +226,20 @@ function editCard(id) {
  if (captureEnvelope().draft?.editing === id) { resumeCardDraft(); return; }
  editing = id; show('add'); $('formTitle').textContent = 'Изменить карточку';
  for (const [field,key] of [['fWord','word'],['fTranslation','translation'],['fIpa','ipa'],['fExample','example'],['fExampleRu','exampleRu']]) $(field).value = c[key] || '';
- $('fDeck').value = c.deck;
+ $('fDeck').value = c.deck;editorFirstExampleId=c.examples[0]?.id||uid();editorExamplesBase=clone(c.examples);renderAdditionalExamples(c.examples.slice(1));
  $('optionalCardFields').open=!!(c.ipa||c.exampleRu);clearFormError();
  rememberCardDraft();
 }
 function saveCard() {
- const fields = {word:$('fWord').value.trim(),translation:$('fTranslation').value.trim(),ipa:$('fIpa').value.trim(),example:$('fExample').value.trim(),exampleRu:$('fExampleRu').value.trim(),deck:$('fDeck').value};
+ const fields = {word:$('fWord').value.trim(),translation:$('fTranslation').value.trim(),ipa:$('fIpa').value.trim(),example:$('fExample').value.trim(),exampleRu:$('fExampleRu').value.trim(),deck:$('fDeck').value,examples:editorExamples()};
  if (!validateCardForm(fields)) return;
  const editId = editing;
  return perform(async () => {
   await mutateState(next => {
    if (editId) {
     const c = next.cards.find(c => c.id === editId); if (!c) throw new Error('Карточка уже удалена.');
-    Object.assign(c,fields); // Keep the existing review schedule on an edit.
+    const examples=mergeExampleEdits(editorExamplesBase,fields.examples,c.examples);
+    Object.assign(c,fields,{examples}); // Keep the existing review schedule on an edit.
    } else next.cards.push({id:uid(),...fields,reps:0,interval:0,ease:2.5,next:0});
   });
   resetForm(); show('library'); showToast(editId?'Карточка обновлена':'Карточка добавлена');
@@ -267,19 +269,19 @@ function drawReview() {
 }
 function reveal() {
  if (!current) return;
- $('backTranslation').textContent = current.translation; $('backExample').textContent = current.example || 'Пример пока не добавлен.';
- $('backNote').textContent = current.exampleRu; $('reviewSpeakExample').classList.toggle('hidden',!current.example.trim());
+ $('backTranslation').textContent = current.translation;renderExamples('review',db.cards.find(c=>c.id===current.id),0);
  $('answer').classList.remove('hidden'); $('rateBtns').classList.remove('hidden'); $('revealBtn').classList.add('hidden');
 }
 function schedule(c,known,now=Date.now()) { Object.assign(c,scheduledAnswer(c,known,now)); }
 function recordAnswer(next,c,known) { const now=Date.now(),introduced=isNewCard(c);schedule(c,known,now);next.reviews.push({id:uid(),cardId:c.id,deck:c.deck,at:now,known:!!known,interval:c.interval,introduced}); }
 
 function rate(known) {
- if (!current || $('rateBtns').classList.contains('hidden')) return;
+ if (!current || exampleComposer || $('rateBtns').classList.contains('hidden')) return;
  const id = current.id;
  return perform(async () => {
   await mutateState(next => { const c = next.cards.find(c => c.id === id); if (c) recordAnswer(next,c,known); });
-  stopSpeech(); qIndex++; drawReview();
+  stopSpeech();const advance=()=>{qIndex++;drawReview();};
+  if(known||!openExampleComposer(id,advance))advance();
  });
 }
 function openDeck(name) {
@@ -298,19 +300,19 @@ function drawDeckWord() {
  $('deckAnswer').classList.add('hidden'); $('deckRates').classList.add('hidden'); $('deckReveal').classList.toggle('hidden',!c);
  if(!c){const plan=reviewPlan(db,{scope:descendantKeys(studyDeck),newLimit:dailyNewLimit()});$('deckEmpty').innerHTML='<span class="empty-icon">'+icon(deckQueue.length?'check-circle':'folder')+'</span><h2>'+(deckQueue.length?'Колода завершена.':'На сейчас всё.')+'</h2><p>'+esc(reviewPlanMessage(plan))+'</p><button class="primary-button" onclick="leaveFocus()">К колодам</button>';return;}
  deckCurrent = c; $('deckCardLocation').textContent = deckPath(c.deck)+' · '+(isNewCard(c)?'новое слово':'повторение'); $('deckWord').textContent = c.word; $('deckIpa').textContent=c.ipa||'';$('deckIpa').classList.toggle('hidden',!c.ipa);$('deckNextInterval').textContent=nextIntervalLabel(c);
- $('deckTranslation').textContent = c.translation; $('deckExample').textContent = c.example || 'Пример пока не добавлен.';
- $('speakExampleBtn').classList.toggle('hidden',!c.example.trim()); $('deckExampleRu').textContent = c.exampleRu;
+ $('deckTranslation').textContent = c.translation;renderExamples('deck',c,0);
 }
 function revealDeckWord() {
  if (!deckCurrent) return;
  $('deckAnswer').classList.remove('hidden'); $('deckRates').classList.remove('hidden'); $('deckReveal').classList.add('hidden');
 }
 function rateDeckWord(known) {
- if (!deckCurrent || $('deckRates').classList.contains('hidden')) return;
+ if (!deckCurrent || exampleComposer || $('deckRates').classList.contains('hidden')) return;
  const id = deckCurrent.id;
  return perform(async () => {
   await mutateState(next => { const c = next.cards.find(c => c.id === id); if (c) recordAnswer(next,c,known); });
-  stopSpeech(); deckIndex++; drawDeckWord();
+  stopSpeech();const advance=()=>{deckIndex++;drawDeckWord();};
+  if(known||!openExampleComposer(id,advance))advance();
  });
 }
 function openYouGlish(word,accent) {
@@ -328,8 +330,8 @@ function speakFallback(word,accent) {
  speechSynthesis.speak(u);
 }
 function playDictionaryAudio(accent) { if (deckCurrent) speakFallback(deckCurrent.word,accent); }
-function speakDeckExample() { if (deckCurrent && deckCurrent.example.trim()) speakFallback(deckCurrent.example,$('ygAccent').value); }
-function speakReviewExample() { if (current && current.example.trim()) speakFallback(current.example,'us'); }
+function speakDeckExample() { speakSelectedExample('deck'); }
+function speakReviewExample() { speakSelectedExample('review'); }
 function speakCurrent(accent='us') { if (current) speakFallback(current.word,accent); }
 function youglishCurrent() { if (current) openYouGlish(current.word,'us'); }
 function openTtsSettings() {
@@ -339,7 +341,7 @@ function openTtsSettings() {
 function resetSessions() { current = deckCurrent = null; queue = []; deckQueue = []; qIndex = deckIndex = 0; resetForm(); stopSpeech(); }
 function resetAllData() {
  if (!confirm('Удалить все карточки и колоды? Сначала сделай экспорт CSV или SQLite.')) return;
- return perform(async () => { await mutateState(next => { next.decks = [...DEFAULT_DECKS]; next.cards = []; next.deckMeta = Object.create(null); next.reviews = []; }); resetSessions(); show('home'); });
+ return perform(async () => { await mutateState(next => { next.decks = [...DEFAULT_DECKS]; next.cards = []; next.deckMeta = Object.create(null); next.reviews = []; }); resetSessions();clearExampleDrafts(); show('home'); });
 }
 // RFC 4180 quoting, with common semicolon and tab delimited deck support.
 function parseCSV(input) {
@@ -378,11 +380,11 @@ function csvCards(content, forcedDeck) {
   let path = null;
   if (!forcedDeck && o.deckpath) { path = JSON.parse(o.deckpath); if (!Array.isArray(path) || !path.length || path.length>17 || path.some(p => typeof p!=='string'||!p.trim()||p.length>200)) throw new Error('Неверный путь колоды в CSV.'); }
   paths.push(path);
-  cards.push({id:uid(),word,translation,ipa:o.ipa || o.transcription || '',example:o.example || '',exampleRu:o.exampleru || o.example_ru || o.example_translation || '',deck:forcedDeck || o.deck || 'Imported',reps:o.reps || 0,interval:o.interval || 0,ease:o.ease || 2.5,next:o.next || 0});
+  cards.push({id:uid(),word,translation,ipa:o.ipa || o.transcription || '',example:o.example || '',exampleRu:o.exampleru || o.example_ru || o.example_translation || '',examples:o.examples?JSON.parse(o.examples):undefined,deck:forcedDeck || o.deck || 'Imported',reps:o.reps || 0,interval:o.interval || 0,ease:o.ease || 2.5,next:o.next || 0});
  }
  return {cards:normalizeState({decks:[],cards}).cards.map((c,i) => paths[i] ? {...c,importPath:paths[i]} : c),skipped};
 }
-function fingerprint(c) { return JSON.stringify([c.deck,c.word,c.translation,c.ipa,c.example,c.exampleRu]); }
+function fingerprint(c) { return JSON.stringify([c.deck,c.word,c.translation,c.ipa,cardExamples(c).map(e=>[e.text,e.translation])]); }
 async function appendCards(cards) {
  let added = 0, duplicates = 0;
  await mutateState(next => {
@@ -408,8 +410,8 @@ async function importCSV(event) {
 function exportCSV() {
  return perform(async () => {
   await persistChain;
-  const headers = ['word','translation','ipa','example','exampleRu','deck','reps','interval','ease','next','deckPath'];
-  const rows = [headers,...db.cards.map(c => headers.map(k => k==='deck' ? deckName(c.deck) : k==='deckPath' ? JSON.stringify(deckAncestors(c.deck).map(d => deckName(d))) : c[k]))];
+  const headers = ['word','translation','ipa','example','exampleRu','deck','reps','interval','ease','next','deckPath','examples'];
+  const rows = [headers,...db.cards.map(c => headers.map(k => k==='deck' ? deckName(c.deck) : k==='deckPath' ? JSON.stringify(deckAncestors(c.deck).map(d => deckName(d))) : k==='examples'?JSON.stringify(c.examples):c[k]))];
   const csv = '\ufeff' + rows.map(row => row.map(v => '"' + String(v ?? '').replace(/"/g,'""') + '"').join(',')).join('\r\n');
   await saveBlobToDevice(new Blob([csv],{type:'text/csv'}),'lexicards-backup.csv','text/csv');
  });

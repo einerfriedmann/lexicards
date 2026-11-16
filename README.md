@@ -4,7 +4,15 @@ An offline English flashcard app with Android text-to-speech, spaced review, nes
 
 The Android shell is Kotlin. The bundled HTML/CSS/JavaScript interface and SQL.js run locally in WebView; no CDN or account is required to open your cards. Android 8.0+ and a current Android System WebView are required.
 
-## Version 0.7.0
+## Version 0.8.0
+
+Cards now hold an ordered list of examples with optional translations and no fixed count limit. Review and deck sessions show one example at a time, with touch swipes, arrow buttons, keyboard navigation and speech for the selected phrase.
+
+After an Again answer is saved, an optional composer invites the learner to write their own phrase or continue immediately. The phrase is appended without changing the saved review date or recording another grade. Drafts survive restarts and can be resumed from home. More examples can also be added, edited and removed in the card editor; Android Share appends incoming examples instead of replacing existing ones.
+
+Old single examples migrate into the list. SQLite and CSV roundtrip the full list; malformed imports and write failures preserve the active library. Stable example IDs make save retries safe, and saving an older card draft preserves phrases appended during study.
+
+## Spaced review and deck management
 
 - Explicit Rename, Move and Delete actions in each deck menu. Deleting a parent shows the affected deck/card counts and requires confirmation; unrelated data and review history remain intact.
 - Separate New, Due and Later states with the next review date on each card. New words never inflate the due counter.
@@ -40,7 +48,7 @@ npx playwright install --with-deps chromium
 npm test
 ```
 
-Nine scheduler checks cover fixed-time plans, deadline boundaries, daily budgets and legacy state. The 51 browser checks serve bundled assets through Playwright interception and block external requests. They verify persistence, import/export, drafts, sharing, scheduling, statistics, hierarchy and mobile interactions. `CHROMIUM_PATH` optionally selects an existing Chromium binary.
+Nine scheduler checks cover fixed-time plans, deadline boundaries, daily budgets and legacy state. The 51 general and 14 example browser checks serve bundled assets through Playwright interception and block external requests. They verify persistence, import/export, drafts, sharing, scheduling, statistics, hierarchy and mobile interactions. `CHROMIUM_PATH` optionally selects an existing Chromium binary.
 
 GitHub Actions builds the debug APK, runs Android and interface checks, and attaches reports and screenshots to each run.
 

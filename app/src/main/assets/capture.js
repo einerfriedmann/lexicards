@@ -14,10 +14,11 @@ function captureEnvelope() {
 function formFields() {
  const fields = {};
  for (const [key,id] of Object.entries(CARD_FIELDS)) fields[key] = $(id).value;
+ fields.additionalExamples=additionalEditorExamples();fields.firstExampleId=editorFirstExampleId;fields.exampleBase=clone(editorExamplesBase);
  return fields;
 }
 function hasDraftText(fields) {
- return Object.keys(CARD_FIELDS).some(key => key !== 'deck' && String(fields[key] || '').trim());
+ return Object.keys(CARD_FIELDS).some(key => key !== 'deck' && String(fields[key] || '').trim())||(fields.additionalExamples||[]).some(e=>e.text.trim()||e.translation.trim());
 }
 function writeCaptureEnvelope(state) {
  localStorage.setItem(CAPTURE_KEY,JSON.stringify(state));
@@ -56,6 +57,7 @@ function restoreEditorDraft() {
  for (const [key,id] of Object.entries(CARD_FIELDS)) {
   if (key !== 'deck' || db.decks.includes(draft.fields.deck)) $(id).value = String(draft.fields[key] || '');
  }
+ restoreExampleEditorFields(draft.fields);
  $('formTitle').textContent = editing ? 'Изменить карточку' : 'Новая карточка';
  $('optionalCardFields').open=!!(draft.fields.ipa||draft.fields.exampleRu);
  draftStatus('Черновик восстановлен.'); return true;
@@ -80,8 +82,8 @@ function canOpenCardEdit(id) {
 }
 function initializeCapture() {
  const form = $('add');
- form.addEventListener('input',event => { if (Object.values(CARD_FIELDS).includes(event.target.id)) rememberCardDraft(); });
- form.addEventListener('change',event => { if (Object.values(CARD_FIELDS).includes(event.target.id)) rememberCardDraft(); });
+ form.addEventListener('input',event => { if (Object.values(CARD_FIELDS).includes(event.target.id)||event.target.closest('#additionalExamples')) rememberCardDraft(); });
+ form.addEventListener('change',event => { if (Object.values(CARD_FIELDS).includes(event.target.id)||event.target.closest('#additionalExamples')) rememberCardDraft(); });
  $('sharedTextDialog').addEventListener('cancel',event => { event.preventDefault(); dismissSharedText(); });
  try { restoreEditorDraft(); updateDraftResume(); }
  catch (e) { draftStatus('Не удалось восстановить черновик: ' + e.message,true); }
@@ -121,17 +123,18 @@ function finishSharedRequest() {
 function applySharedText(field) {
  if (!pendingSharedRequest || !['word','example'].includes(field)) return;
  const fields = formFields(), value = pendingSharedRequest.text;
- if (fields[field] && fields[field] !== value && !confirm('Поле «' + (field === 'word' ? 'Слово' : 'Пример') + '» уже заполнено. Заменить его полученным текстом?')) return;
+ if (field==='word' && fields[field] && fields[field] !== value && !confirm('Поле «' + (field === 'word' ? 'Слово' : 'Пример') + '» уже заполнено. Заменить его полученным текстом?')) return;
  try {
-  const state = captureEnvelope(); fields[field] = value;
+  const state = captureEnvelope();
+  if(field==='example'&&(fields.example.trim()||fields.exampleRu.trim()))fields.additionalExamples.push({id:uid(),text:value,translation:''});else fields[field]=value;
   state.draft = {editing,fields};
   state.receivedShares = [...state.receivedShares,pendingSharedRequest.id].slice(-64);
   // Save first; a failed write leaves the old form and native inbox untouched.
   writeCaptureEnvelope(state);
-  $(CARD_FIELDS[field]).value = value;
+  if(field==='example'){ $('fExample').value=fields.example;renderAdditionalExamples(fields.additionalExamples); }else $(CARD_FIELDS[field]).value=value;
   finishSharedRequest(); show('add');
   draftStatus('Текст добавлен в черновик. Дополни карточку и нажми «Сохранить карточку».');
-  $(CARD_FIELDS[field]).focus();
+  if(field==='example'&&fields.additionalExamples.length)$('additionalExamples').lastElementChild.querySelector('textarea').focus();else $(CARD_FIELDS[field]).focus();
  } catch (e) { $('sharedTextError').textContent = 'Текст не добавлен: ' + e.message + '. Повтори попытку.'; }
 }
 function dismissSharedText() {
