@@ -12,11 +12,11 @@ android {
     namespace = "com.lexicards.app"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.lexicards.app"
+        applicationId = "com.lexicards.app.next"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.8.0"
+        versionCode = 10
+        versionName = "0.8.1"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -28,6 +28,7 @@ android {
         signingConfigs {
             create("release") {
                 storeFile = rootProject.file(releaseKeys.getProperty("storeFile"))
+                storeType = releaseKeys.getProperty("storeType", "JKS")
                 storePassword = releaseKeys.getProperty("storePassword")
                 keyAlias = releaseKeys.getProperty("keyAlias")
                 keyPassword = releaseKeys.getProperty("keyPassword")

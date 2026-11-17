@@ -4,7 +4,11 @@ An offline English flashcard app with Android text-to-speech, spaced review, nes
 
 The Android shell is Kotlin. The bundled HTML/CSS/JavaScript interface and SQL.js run locally in WebView; no CDN or account is required to open your cards. Android 8.0+ and a current Android System WebView are required.
 
-## Version 0.8.0
+## Version 0.8.1 — LexiCards New
+
+The installable release uses `com.lexicards.app.next` and the launcher label **LexiCards New**, so it coexists with the previously distributed app. Export a SQLite backup from the old app, then restore it in the new app to transfer cards, decks, schedules and history. Future updates of this new package use its separately retained release key. Signing files stay outside Git. CI also builds an unsigned release APK for local signing.
+
+## Multiple examples
 
 Cards now hold an ordered list of examples with optional translations and no fixed count limit. Review and deck sessions show one example at a time, with touch swipes, arrow buttons, keyboard navigation and speech for the selected phrase.
 
