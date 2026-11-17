@@ -1,0 +1,7 @@
+В архив включён Gradle wrapper. Сборка локально с JDK 17 и SDK 35:
+./gradlew :app:assembleDebug
+
+Подписанный release при наличии приватного signing/keystore.properties:
+./gradlew :app:assembleRelease :app:lintRelease
+
+Для установки используй уже собранный LexiCards-0.6.1.apk из ответа.
